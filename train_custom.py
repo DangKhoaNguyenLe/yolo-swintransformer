@@ -76,7 +76,7 @@ def main(dataset_path):
 
         loop = tqdm(dataloader, leave=False, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}")
         for inputs, labels in loop:
-            inputs, labels = inputs.to(device), labels.to(torch.long, device=device)
+            inputs, labels = inputs.to(device), labels.to(device=device, dtype=torch.long)
 
             optimizer.zero_grad()
 
