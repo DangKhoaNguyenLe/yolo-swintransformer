@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 import timm
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -46,7 +46,15 @@ def main(dataset_path):
 
     print(f"Đã tìm thấy {len(dataset)} ảnh thuộc {num_classes} nhãn/người.")
 
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, drop_last=False)
+    # Tách 20% làm tập test/val
+    test_size = int(0.2 * len(dataset))
+    train_size = len(dataset) - test_size
+    train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
+
+    print(f"Chia tập dữ liệu: {train_size} ảnh huấn luyện (Train) - {test_size} ảnh kiểm tra (Val).")
+
+    train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, drop_last=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
 
     # 2. Khởi tạo mô hình
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -63,9 +71,11 @@ def main(dataset_path):
 
     train_loss_history = []
     train_acc_history = []
+    val_loss_history = []
+    val_acc_history = []
     
-    best_loss = float('inf')
-    best_acc = 0.0
+    best_val_loss = float('inf')
+    best_val_acc = 0.0
 
     print("\n Bắt đầu quá trình Huấn Luyện...")
     for epoch in range(NUM_EPOCHS):
@@ -74,7 +84,7 @@ def main(dataset_path):
         correct_preds = 0
         total_samples = 0
 
-        loop = tqdm(dataloader, leave=False, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}")
+        loop = tqdm(train_dataloader, leave=False, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}")
         for inputs, labels in loop:
             inputs, labels = inputs.to(device), labels.to(device=device, dtype=torch.long)
 
@@ -100,18 +110,40 @@ def main(dataset_path):
         epoch_loss = running_loss / total_samples
         epoch_acc = correct_preds.double() / total_samples
         
+        # --- Validation Loop ---
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+
+        with torch.no_grad():
+            for val_inputs, val_labels in test_dataloader:
+                val_inputs, val_labels = val_inputs.to(device), val_labels.to(device=device, dtype=torch.long)
+                val_outputs = model(val_inputs)
+                v_loss = criterion(val_outputs, val_labels)
+                
+                val_loss += v_loss.item() * val_inputs.size(0)
+                _, val_preds = torch.max(val_outputs, 1)
+                val_correct += torch.sum(val_preds == val_labels)
+                val_total += val_labels.size(0)
+                
+        epoch_val_loss = val_loss / val_total
+        epoch_val_acc = val_correct.double() / val_total
+        
         train_loss_history.append(epoch_loss)
         train_acc_history.append(epoch_acc.item())
+        val_loss_history.append(epoch_val_loss)
+        val_acc_history.append(epoch_val_acc.item())
 
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS} - Loss: {epoch_loss:.4f} - Accuracy: {epoch_acc:.4f} - LR: {current_lr:.6f}")
+        print(f"Epoch {epoch+1}/{NUM_EPOCHS} - Train Loss: {epoch_loss:.4f} - Train Acc: {epoch_acc:.4f} - Val Loss: {epoch_val_loss:.4f} - Val Acc: {epoch_val_acc:.4f} - LR: {current_lr:.6f}")
 
-        # 4. Save Best Model
-        if epoch_acc >= best_acc and epoch_loss < best_loss:
-            best_acc = epoch_acc
-            best_loss = epoch_loss
+        # 4. Save Best Model dựa trên Validation Score
+        if epoch_val_acc >= best_val_acc and epoch_val_loss < best_val_loss:
+            best_val_acc = epoch_val_acc
+            best_val_loss = epoch_val_loss
             os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
             torch.save(model.state_dict(), MODEL_SAVE_PATH)
-            print(f" --> Đã lưu phiên bản mô hình tốt nhất (Best Model)!")
+            print(f" --> Đã lưu phiên bản mô hình tốt nhất (Best Model - Val Acc: {best_val_acc:.4f})!")
 
     print(f"\n Lưu tại đường dẫn: {MODEL_SAVE_PATH}")
 
@@ -119,6 +151,7 @@ def main(dataset_path):
     plt.figure(figsize=(10, 5))
     plt.subplot(1, 2, 1)
     plt.plot(range(1, NUM_EPOCHS+1), train_loss_history, marker='o', color='purple', label='Train Loss')
+    plt.plot(range(1, NUM_EPOCHS+1), val_loss_history, marker='o', color='red', label='Val Loss')
     plt.title('Biểu đồ Loss')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
@@ -127,6 +160,7 @@ def main(dataset_path):
 
     plt.subplot(1, 2, 2)
     plt.plot(range(1, NUM_EPOCHS+1), train_acc_history, marker='o', color='green', label='Train Accuracy')
+    plt.plot(range(1, NUM_EPOCHS+1), val_acc_history, marker='o', color='blue', label='Val Accuracy')
     plt.title('Biểu đồ Accuracy')
     plt.xlabel('Epochs')
     plt.ylabel('Accuracy')
